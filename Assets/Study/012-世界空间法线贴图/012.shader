@@ -1,4 +1,4 @@
-﻿Shader "Unlit/011"
+﻿Shader "Unlit/012"
 {
     Properties
     {
@@ -23,7 +23,7 @@
             #include "UnityLightingCommon.cginc"
 
             sampler2D _MainTex;
-            float4 _MainTex_ST;     //不需要定义，与_MainTex绑定，tileing值 以及 offset值
+            float4 _MainTex_ST;
             sampler2D _BumpMap;
             float4 _BumpMap_ST;
             float _BumpScale;
@@ -35,8 +35,9 @@
             {
                 float4 vertex : SV_POSITION;
                 float4 uv :TEXCOORD0;
-                float3 lightDir : TEXCOORD1;
-                float3 viewDir :TEXCOORD2;
+                float4 T2W0 : TEXCOORD1;
+                float4 T2W1 : TEXCOORD2;
+                float4 T2W2 : TEXCOORD3;
             };
 
             v2f vert (appdata_tan v)
@@ -46,41 +47,46 @@
                 o.uv.xy = TRANSFORM_TEX(v.texcoord,_MainTex);
                 o.uv.zw = TRANSFORM_TEX(v.texcoord,_BumpMap);
 
-                //求副切线向量
-                //float3 binormal = cross(normalize(v.normal),normalize(v.tangent.xyz)) * v.tangent.w;
-                //模型空间到切线空间的旋转矩阵
-                //float3x3 rotation = float3x3(v.tangent.xyz,binormal,v.normal);
-                TANGENT_SPACE_ROTATION;     //这个宏定义了上面两条代码
+                float3 worldPos = mul(unity_ObjectToWorld,v.vertex).xyz;
+                float3 worldNormal = UnityObjectToWorldNormal(v.normal);
+                float3 worldTangent = UnityObjectToWorldDir(v.tangent);
+                float3 worldBiNormal = cross(worldNormal,worldTangent) * v.tangent.w;
 
-                //拿到模型uv 与tileing 以及 offset计算完后 返回当前uv
-                //o.uv = v.texcoord.xy * _MainTex_ST.xy + _MainTex_ST.zw;
+                //
+                o.T2W0 = float4(worldTangent.x,worldBiNormal.x,worldNormal.x,worldPos.x);
+                o.T2W1 = float4(worldTangent.y,worldBiNormal.y,worldNormal.y,worldPos.y);
+                o.T2W2 = float4(worldTangent.z,worldBiNormal.z,worldNormal.z,worldPos.z);
 
-                //ObjSpaceLightDir / ObjSpaceViewDir  获取 物体空间的光照以及视角向量，  乘旋转矩阵即可
-                o.lightDir = normalize(mul(rotation,ObjSpaceLightDir(v.vertex)).xyz);
-                o.viewDir = normalize(mul(rotation,ObjSpaceViewDir(v.vertex)).xyz);
                 return o;
             }
 
             fixed4 frag (v2f i) : SV_Target
             {
+                float3 worldPos = float3(i.T2W0.w,i.T2W1.w,i.T2W2.w);
+
+                //世界空间光照以及视角
+                fixed3 lightDir = normalize(UnityWorldSpaceLightDir(worldPos));
+                fixed3 viewDir = normalize(UnityWorldSpaceViewDir(worldPos));
+
+                //获得纹理
+                fixed3 albedo = tex2D(_MainTex, i.uv.xy).rgb;
                 fixed4 packedNormal = tex2D(_BumpMap,i.uv.wz);
 
-                //如果法线使用Default模式 则需要计算
-                // fixed3 tangentNormal;
-                // tangentNormal.xy = (packedNormal.xy * 2 -1) * _BumpScale;
-                // tangentNormal.z = sqrt(1-saturate(dot(tangentNormal.xy,tangentNormal.xy)));
-                
-                //如果法线使用NormalMap 模式，Unity自动计算
+                //切线空间法线转换至世界坐标
                 fixed3 tangentNormal = UnpackNormal(packedNormal);
                 tangentNormal.xy *= _BumpScale;
 
-                // 获得mainTex对应uv的颜色值
-                fixed3 albedo = tex2D(_MainTex, i.uv.xy).rgb;
+                //这里相当于 mul(变换矩阵,tangentNormal) 
+                tangentNormal = normalize(float3(dot(i.T2W0.xyz,tangentNormal),dot(i.T2W1.xyz,tangentNormal),dot(i.T2W2.xyz,tangentNormal)));
 
+                //环境光
                 fixed3 ambient = UNITY_LIGHTMODEL_AMBIENT.xyz;
-                fixed3 diffuse = _LightColor0.rgb * albedo * _Diffuse.rgb * saturate(dot(i.lightDir,tangentNormal));
 
-                fixed3 halfDir = normalize(i.viewDir + i.lightDir);
+                // lanboter
+                fixed3 diffuse = _LightColor0.rgb * albedo * _Diffuse.rgb * saturate(dot(lightDir,tangentNormal));
+
+                //blind Phone
+                fixed3 halfDir = normalize(viewDir + lightDir);
                 fixed3 specular = _LightColor0.rgb * _Specular.rgb * pow(saturate(dot(tangentNormal, halfDir)), _Gloss);
                 
                 fixed3 color = specular + diffuse + ambient;
